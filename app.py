@@ -10,7 +10,6 @@ from fastapi.templating import Jinja2Templates
 import io
 
 # กำหนด Path ให้แม่นยำขึ้นสำหรับ Linux/Render
-BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app = FastAPI(title="MathQuiz Pro")
