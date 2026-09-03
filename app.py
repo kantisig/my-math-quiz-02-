@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 import io
 
+# กำหนด Path ให้แม่นยำขึ้นสำหรับ Linux/Render
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -29,30 +30,35 @@ class LiveQuizState:
         self.raw_quiz = quiz_data
         self.is_live = False
         self.submissions = []
+        self.shuffled_questions = []
 
     def start_live(self, duration_minutes: int):
-        if not self.raw_quiz: return False
+        if not self.raw_quiz or "questions" not in self.raw_quiz: 
+            return False
         self.is_live = True
         self.live_duration_seconds = duration_minutes * 60
         self.start_timestamp = time.time()
         self.submissions = []
         
         # Shuffle Questions & Choices
-        qs = list(self.raw_quiz["questions"])
+        qs = [dict(q) for q in self.raw_quiz["questions"]]
         random.shuffle(qs)
         for q in qs:
-            # เก็บเฉลยเดิมไว้เทียบก่อนสุ่ม
-            correct_choice = q["choices"][q["correct_answer_index"]]
-            random.shuffle(q["choices"])
-            q["correct_answer_index"] = q["choices"].index(correct_choice)
+            if "choices" in q and "correct_answer_index" in q:
+                correct_choice = q["choices"][q["correct_answer_index"]]
+                random.shuffle(q["choices"])
+                q["correct_answer_index"] = q["choices"].index(correct_choice)
         
         self.shuffled_questions = qs
         return True
 
     def get_remaining(self):
         if not self.is_live: return 0
-        rem = int(self.live_duration_seconds - (time.time() - self.start_timestamp))
-        if rem <= 0: self.is_live = False; return 0
+        elapsed = time.time() - self.start_timestamp
+        rem = int(self.live_duration_seconds - elapsed)
+        if rem <= 0:
+            self.is_live = False
+            return 0
         return rem
 
     def add_submission(self, name, answers):
@@ -61,7 +67,7 @@ class LiveQuizState:
         details = {}
         for q in self.shuffled_questions:
             qid = str(q["id"])
-            user_ans = answers.get(qid)
+            user_ans = answers.get(qid) # อาจเป็น None ได้ถ้าเด็กไม่ตอบ
             correct = q["correct_answer_index"]
             is_correct = (user_ans == correct)
             if is_correct: score += 1
@@ -93,33 +99,52 @@ async def student_page(request: Request):
 async def teacher_page(request: Request):
     return templates.TemplateResponse("teacher.html", {"request": request})
 
+# เพิ่ม Endpoint นี้ เพราะหน้าเว็บนักเรียนเรียกหา
+@app.get("/api/quiz-status")
+async def quiz_status():
+    return {
+        "is_live": state.is_live,
+        "has_quiz": state.raw_quiz is not None,
+        "remaining_seconds": state.get_remaining(),
+        "quiz_title": state.raw_quiz.get("quiz_title", "") if state.raw_quiz else ""
+    }
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    data = json.loads((await file.read()).decode())
-    state.set_quiz(data)
-    return {"status": "success"}
+    try:
+        content = await file.read()
+        data = json.loads(content.decode("utf-8"))
+        state.set_quiz(data)
+        return {"status": "success"}
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 @app.post("/api/start-timer")
 async def start(request: Request):
-    d = await request.json()
-    if state.start_live(int(d.get("duration", 10))):
-        await broadcast(state.students, {"type": "START", "seconds": state.live_duration_seconds})
-        await broadcast(state.teachers, {"type": "STATUS_UPDATE", "is_live": True})
-        return {"status": "success"}
-    return {"status": "error"}
+    try:
+        d = await request.json()
+        duration = int(d.get("duration", 10))
+        if state.start_live(duration):
+            await broadcast(state.students, {"type": "START", "seconds": state.live_duration_seconds})
+            await broadcast(state.teachers, {"type": "STATUS_UPDATE", "is_live": True})
+            return {"status": "success"}
+        return JSONResponse(status_code=400, content={"status": "error", "message": "ยังไม่ได้โหลดข้อสอบ"})
+    except:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "ข้อมูลไม่ถูกต้อง"})
 
 @app.get("/api/get-quiz")
 async def get_quiz():
-    if not state.is_live: return JSONResponse({"error": "Exam not started"}, 400)
-    # Hide correct answers
+    if not state.is_live: 
+        return JSONResponse(status_code=400, content={"error": "การสอบยังไม่เริ่ม"})
     safe_qs = [{"id": q["id"], "question": q["question"], "choices": q["choices"]} for q in state.shuffled_questions]
-    return {"title": state.raw_quiz["quiz_title"], "questions": safe_qs}
+    return {"title": state.raw_quiz.get("quiz_title", "Quiz"), "questions": safe_qs}
 
 @app.post("/api/submit")
 async def submit(request: Request):
     d = await request.json()
-    res = state.add_submission(d["student_name"], d["answers"])
-    await broadcast(state.teachers, {"type": "NEW_SUBMISSION", "analytics": get_analytics()})
+    res = state.add_submission(d.get("student_name", "Anonymous"), d.get("answers", {}))
+    if res:
+        await broadcast(state.teachers, {"type": "NEW_SUBMISSION", "analytics": get_analytics()})
     return res
 
 @app.get("/api/export-csv")
@@ -128,17 +153,19 @@ async def export_csv():
     output.write("Student Name,Score,Total,Time\n")
     for s in state.submissions:
         output.write(f"{s['name']},{s['score']},{s['total']},{s['submitted_at']}\n")
-    return StreamingResponse(io.BytesIO(output.getvalue().encode()), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=results.csv"})
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8-sig")), # ใช้ utf-8-sig เพื่อให้ Excel อ่านไทยออก
+        media_type="text/csv", 
+        headers={"Content-Disposition": "attachment; filename=results.csv"}
+    )
 
 def get_analytics():
-    if not state.raw_quiz: return {}
+    if not state.raw_quiz or not state.shuffled_questions: return {}
     subs = state.submissions
     total_q = len(state.shuffled_questions)
-    # Simple analytics
     scores = [s["score"] for s in subs]
     hist = [scores.count(i) for i in range(total_q + 1)]
     
-    # Item analysis (wrong count)
     wrong_counts = []
     for q in state.shuffled_questions:
         qid = str(q["id"])
@@ -148,14 +175,17 @@ def get_analytics():
     return {
         "total_students": len(subs),
         "histogram": hist,
-        "submissions": subs[::-1], # Latest first
+        "submissions": subs[::-1],
         "wrong_ranking": sorted(wrong_counts, key=lambda x: x["wrong"], reverse=True)[:5]
     }
 
 async def broadcast(client_list, message):
     for ws in client_list[:]:
-        try: await ws.send_json(message)
-        except: client_list.remove(ws)
+        try:
+            await ws.send_json(message)
+        except:
+            if ws in client_list:
+                client_list.remove(ws)
 
 @app.websocket("/ws/{role}")
 async def websocket_endpoint(websocket: WebSocket, role: str):
@@ -165,10 +195,13 @@ async def websocket_endpoint(websocket: WebSocket, role: str):
     try:
         if role == "teacher":
             await websocket.send_json({"type": "INIT", "is_live": state.is_live, "analytics": get_analytics()})
-        while True: await websocket.receive_text()
+        while True:
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        target_list.remove(websocket)
+        if websocket in target_list:
+            target_list.remove(websocket)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
