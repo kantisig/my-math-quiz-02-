@@ -9,8 +9,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 import io
 
-# กำหนด Path ให้แม่นยำขึ้นสำหรับ Linux/Render
+# --- ส่วนแก้ไขเรื่อง Path เพื่อป้องกัน Error บน Render ---
+BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+# -----------------------------------------------------
 
 app = FastAPI(title="MathQuiz Pro")
 
@@ -66,7 +68,7 @@ class LiveQuizState:
         details = {}
         for q in self.shuffled_questions:
             qid = str(q["id"])
-            user_ans = answers.get(qid) # อาจเป็น None ได้ถ้าเด็กไม่ตอบ
+            user_ans = answers.get(qid)
             correct = q["correct_answer_index"]
             is_correct = (user_ans == correct)
             if is_correct: score += 1
@@ -98,7 +100,6 @@ async def student_page(request: Request):
 async def teacher_page(request: Request):
     return templates.TemplateResponse("teacher.html", {"request": request})
 
-# เพิ่ม Endpoint นี้ เพราะหน้าเว็บนักเรียนเรียกหา
 @app.get("/api/quiz-status")
 async def quiz_status():
     return {
@@ -153,7 +154,7 @@ async def export_csv():
     for s in state.submissions:
         output.write(f"{s['name']},{s['score']},{s['total']},{s['submitted_at']}\n")
     return StreamingResponse(
-        io.BytesIO(output.getvalue().encode("utf-8-sig")), # ใช้ utf-8-sig เพื่อให้ Excel อ่านไทยออก
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
         media_type="text/csv", 
         headers={"Content-Disposition": "attachment; filename=results.csv"}
     )
@@ -202,5 +203,6 @@ async def websocket_endpoint(websocket: WebSocket, role: str):
 
 if __name__ == "__main__":
     import uvicorn
+    # ดึง Port จาก Environment ของ Render
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
