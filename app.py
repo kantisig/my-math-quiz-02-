@@ -9,10 +9,9 @@ from fastapi import FastAPI, Request, UploadFile, File, WebSocket, WebSocketDisc
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-# ใช้การระบุโฟลเดอร์แบบที่แน่นอนที่สุด
+# --- แก้ไขจุดที่ 1: กำหนด BASE_DIR ให้ถูกต้อง ---
 BASE_DIR = Path(__file__).resolve().parent
-template_path = os.path.join(BASE_DIR, "templates")
-templates = Jinja2Templates(directory=template_path)
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 app = FastAPI(title="MathQuiz Pro")
 
@@ -41,13 +40,11 @@ class LiveQuizState:
         self.start_timestamp = time.time()
         self.submissions = []
         
-        # คัดลอกโจทย์และสลับคำตอบ
         qs = [dict(q) for q in self.raw_quiz["questions"]]
         random.shuffle(qs)
         for q in qs:
             if "choices" in q and "correct_answer_index" in q:
-                correct_idx = q["correct_answer_index"]
-                correct_content = q["choices"][correct_idx]
+                correct_content = q["choices"][q["correct_answer_index"]]
                 random.shuffle(q["choices"])
                 q["correct_answer_index"] = q["choices"].index(correct_content)
         
@@ -56,7 +53,8 @@ class LiveQuizState:
 
     def get_remaining(self):
         if not self.is_live: return 0
-        rem = int(self.live_duration_seconds - (time.time() - self.start_timestamp))
+        elapsed = time.time() - self.start_timestamp
+        rem = int(self.live_duration_seconds - elapsed)
         if rem <= 0:
             self.is_live = False
             return 0
@@ -83,17 +81,16 @@ class LiveQuizState:
 
 state = LiveQuizState()
 
-# --- หน้าเว็บหลัก ---
+# --- แก้ไขจุดที่ 2: วิธีการส่ง TemplateResponse แบบใหม่ (FastAPI 0.109+) ---
 @app.get("/", response_class=HTMLResponse)
 async def student_page(request: Request):
-    # ตรวจสอบว่ามีไฟล์อยู่จริงไหมก่อนส่ง
-    return templates.TemplateResponse("student.html", {"request": request})
+    # ต้องใช้ request=request เป็น Parameter แรก
+    return templates.TemplateResponse(request=request, name="student.html")
 
 @app.get("/teacher", response_class=HTMLResponse)
 async def teacher_page(request: Request):
-    return templates.TemplateResponse("teacher.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="teacher.html")
 
-# --- API Endpoints ---
 @app.get("/api/quiz-status")
 async def quiz_status():
     return {
@@ -115,15 +112,20 @@ async def upload(file: UploadFile = File(...)):
 
 @app.post("/api/start-timer")
 async def start(request: Request):
-    d = await request.json()
-    if state.start_live(int(d.get("duration", 10))):
-        await broadcast(state.students, {"type": "START", "seconds": state.live_duration_seconds})
-        return {"status": "success"}
-    return JSONResponse(status_code=400, content={"status": "error"})
+    try:
+        d = await request.json()
+        duration = int(d.get("duration", 10))
+        if state.start_live(duration):
+            await broadcast(state.students, {"type": "START", "seconds": state.live_duration_seconds})
+            return {"status": "success"}
+        return JSONResponse(status_code=400, content={"status": "error", "message": "No quiz loaded"})
+    except:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid data"})
 
 @app.get("/api/get-quiz")
 async def get_quiz():
-    if not state.is_live: return JSONResponse(status_code=400, content={"error": "Not started"})
+    if not state.is_live: 
+        return JSONResponse(status_code=400, content={"error": "Not started"})
     safe_qs = [{"id": q["id"], "question": q["question"], "choices": q["choices"]} for q in state.shuffled_questions]
     return {"title": state.raw_quiz.get("quiz_title", "Quiz"), "questions": safe_qs}
 
@@ -140,11 +142,14 @@ async def export_csv():
     output.write("Student Name,Score,Total,Time\n")
     for s in state.submissions:
         output.write(f"{s['name']},{s['score']},{s['total']},{s['submitted_at']}\n")
-    return StreamingResponse(io.BytesIO(output.getvalue().encode("utf-8-sig")),
-                             media_type="text/csv", headers={"Content-Disposition": "attachment; filename=results.csv"})
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode("utf-8-sig")),
+        media_type="text/csv", 
+        headers={"Content-Disposition": "attachment; filename=results.csv"}
+    )
 
 def get_analytics():
-    if not state.raw_quiz or not state.shuffled_questions: return {}
+    if not state.raw_quiz: return {}
     subs = state.submissions
     scores = [s["score"] for s in subs]
     total_q = len(state.shuffled_questions)
@@ -152,14 +157,16 @@ def get_analytics():
         "total_students": len(subs),
         "histogram": [scores.count(i) for i in range(total_q + 1)],
         "submissions": subs[::-1],
-        "wrong_ranking": [] # ตัดออกชั่วคราวเพื่อความเร็ว
+        "wrong_ranking": []
     }
 
 async def broadcast(client_list, message):
     for ws in client_list[:]:
-        try: await ws.send_json(message)
-        except: 
-            if ws in client_list: client_list.remove(ws)
+        try:
+            await ws.send_json(message)
+        except:
+            if ws in client_list:
+                client_list.remove(ws)
 
 @app.websocket("/ws/{role}")
 async def websocket_endpoint(websocket: WebSocket, role: str):
@@ -167,10 +174,13 @@ async def websocket_endpoint(websocket: WebSocket, role: str):
     target_list = state.teachers if role == "teacher" else state.students
     target_list.append(websocket)
     try:
-        if role == "teacher": await websocket.send_json({"type": "INIT", "is_live": state.is_live, "analytics": get_analytics()})
-        while True: await websocket.receive_text()
+        if role == "teacher":
+            await websocket.send_json({"type": "INIT", "is_live": state.is_live, "analytics": get_analytics()})
+        while True:
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        if websocket in target_list: target_list.remove(websocket)
+        if websocket in target_list:
+            target_list.remove(websocket)
 
 if __name__ == "__main__":
     import uvicorn
