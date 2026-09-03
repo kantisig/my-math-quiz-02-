@@ -1,0 +1,75 @@
+<!-- ส่วนที่เพิ่มเติมใน <main> ของ teacher.html -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+    <!-- รายชื่อผู้ส่งข้อสอบ -->
+    <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 lg:col-span-2">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="font-semibold text-slate-800">รายชื่อนักเรียนที่ส่งแล้ว</h3>
+            <a href="/api/export-csv" class="text-xs bg-slate-800 text-white px-3 py-1.5 rounded hover:bg-black">Export CSV</a>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead>
+                    <tr class="border-b">
+                        <th class="py-2">ชื่อ-นามสกุล</th>
+                        <th class="py-2">คะแนน</th>
+                        <th class="py-2">เวลาที่ส่ง</th>
+                    </tr>
+                </thead>
+                <tbody id="studentTableBody">
+                    <!-- ข้อมูลจะไหลมาที่นี่ -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- ข้อที่ควรสอนซ้ำ -->
+    <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+        <h3 class="font-semibold text-slate-800 mb-4">⚠️ ข้อที่นักเรียนตอบผิดมากที่สุด</h3>
+        <div id="wrongRankList" class="space-y-3">
+            <p class="text-center text-slate-400 text-sm py-4">รอวิเคราะห์ผล...</p>
+        </div>
+    </div>
+</div>
+
+<script>
+// เพิ่ม Logic ใน WebSocket onmessage
+// ... (code เดิม) ...
+ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "INIT" || msg.type === "NEW_SUBMISSION") {
+        updateUI(msg.analytics);
+    }
+};
+
+function updateUI(data) {
+    if (!data) return;
+    document.getElementById('totalSubmissions').innerText = data.total_students;
+    
+    // อัปเดตตาราง
+    const tbody = document.getElementById('studentTableBody');
+    tbody.innerHTML = data.submissions.map(s => `
+        <tr class="border-b hover:bg-slate-50 transition">
+            <td class="py-2 font-medium">${s.name}</td>
+            <td class="py-2"><span class="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded font-bold">${s.score} / ${s.total}</span></td>
+            <td class="py-2 text-slate-500 text-xs">${s.submitted_at}</td>
+        </tr>
+    `).join('');
+
+    // อัปเดตกราฟ (Histogram)
+    if (chartInstance) {
+        chartInstance.data.labels = data.histogram.map((_, i) => i + " คะแนน");
+        chartInstance.data.datasets[0].data = data.histogram;
+        chartInstance.update();
+    }
+
+    // อัปเดต Ranking ข้อที่ผิด
+    const rankList = document.getElementById('wrongRankList');
+    rankList.innerHTML = data.wrong_ranking.map(q => `
+        <div class="p-3 bg-rose-50 border border-rose-100 rounded-lg">
+            <div class="text-xs font-bold text-rose-600 mb-1">ผิด ${q.wrong} คน</div>
+            <div class="text-sm text-slate-700 line-clamp-2">${q.question}</div>
+        </div>
+    `).join('');
+    renderMath();
+}
+</script>

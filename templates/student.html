@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <title>MathQuiz - ห้องสอบ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+
+    <!-- ส่วนหัว (Header) - เขียนด้วย HTML เพียวๆ -->
+    <nav class="bg-blue-600 p-4 text-white shadow-lg">
+        <div class="max-w-2xl mx-auto flex justify-between items-center">
+            <h1 class="font-bold text-xl">📐 MathQuiz Live</h1>
+            <div id="timer" class="text-xl font-mono bg-blue-800 px-3 py-1 rounded">00:00</div>
+        </div>
+    </nav>
+
+    <main class="max-w-2xl mx-auto mt-10 p-4">
+
+        <!-- 1. หน้าลงชื่อ (HTML Form) -->
+        <div id="setup-view" class="bg-white p-8 rounded-lg shadow-md text-center">
+            <h2 class="text-2xl font-bold mb-4">ยินดีต้อนรับเข้าสู่ห้องสอบ</h2>
+            <p class="text-gray-600 mb-6">กรุณากรอกชื่อเพื่อรออาจารย์เปิดระบบ</p>
+            <input type="text" id="studentName" placeholder="ชื่อของคุณ" class="border p-3 w-full rounded-md mb-4 outline-none focus:ring-2 focus:ring-blue-500">
+            <div class="p-4 bg-yellow-50 text-yellow-700 rounded-md animate-pulse">
+                ⏳ กำลังรอสัญญาณเริ่มสอบจากอาจารย์...
+            </div>
+        </div>
+
+        <!-- 2. หน้าโจทย์ (จะถูกสั่งให้แสดงเมื่ออาจารย์กดเริ่ม) -->
+        <div id="quiz-view" class="hidden space-y-6">
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <h3 id="question-number" class="text-blue-600 font-bold mb-2">ข้อที่ 1</h3>
+                <div id="question-text" class="text-xl mb-6">กำลังโหลดโจทย์...</div>
+                
+                <!-- ปุ่มตัวเลือก (Choices) -->
+                <div class="grid gap-4" id="choices-grid">
+                    <!-- JavaScript จะเอา HTML ปุ่มมาใส่ตรงนี้ -->
+                </div>
+            </div>
+
+            <!-- ปุ่มควบคุม -->
+            <div class="flex justify-between">
+                <button onclick="changeQuestion(-1)" class="bg-gray-300 px-6 py-2 rounded">ย้อนกลับ</button>
+                <button onclick="changeQuestion(1)" id="next-btn" class="bg-blue-600 text-white px-6 py-2 rounded">ข้อถัดไป</button>
+                <button onclick="submitQuiz()" id="submit-btn" class="hidden bg-green-600 text-white px-6 py-2 rounded font-bold">ส่งข้อสอบ</button>
+            </div>
+        </div>
+
+        <!-- 3. หน้าสรุปผล (แสดงเมื่อสอบเสร็จ) -->
+        <div id="result-view" class="hidden bg-white p-8 rounded-lg shadow-md text-center">
+            <h2 class="text-3xl font-bold text-green-600 mb-2">สอบเสร็จสิ้น!</h2>
+            <p class="text-gray-600 mb-4">คะแนนที่ได้</p>
+            <div id="score-display" class="text-6xl font-black text-blue-600">0 / 0</div>
+            <button onclick="location.reload()" class="mt-8 text-blue-500 underline">กลับหน้าแรก</button>
+        </div>
+
+    </main>
+
+    <!-- ส่วน JavaScript: ใส่ไว้ในไฟล์ HTML เดียวกันเพื่อให้ทำงานร่วมกันได้ -->
+    <script>
+        let quizData = [];
+        let currentIdx = 0;
+        let answers = {};
+        let ws;
+
+        // เชื่อมต่อสัญญาณกับ Python (WebSocket)
+        function connect() {
+            ws = new WebSocket(`ws://${location.host}/ws/student`);
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === "START") {
+                    startQuiz();
+                }
+            };
+        }
+
+        async function startQuiz() {
+            const res = await fetch('/api/get-quiz');
+            const data = await res.json();
+            quizData = data.questions;
+            
+            // เปลี่ยนหน้าจอโดยใช้ HTML classes
+            document.getElementById('setup-view').classList.add('hidden');
+            document.getElementById('quiz-view').classList.remove('hidden');
+            renderQuestion();
+        }
+
+        function renderQuestion() {
+            const q = quizData[currentIdx];
+            document.getElementById('question-number').innerText = `ข้อที่ ${currentIdx + 1} / ${quizData.length}`;
+            document.getElementById('question-text').innerText = q.question;
+            
+            const grid = document.getElementById('choices-grid');
+            grid.innerHTML = ''; // ล้าง HTML เดิม
+
+            q.choices.forEach((choice, i) => {
+                const isSelected = answers[q.id] === i;
+                grid.innerHTML += `
+                    <button onclick="selectChoice(${q.id}, ${i})" 
+                        class="p-4 border-2 rounded-xl text-left transition ${isSelected ? 'border-blue-600 bg-blue-50' : 'border-gray-200 hover:border-blue-300'}">
+                        ${String.fromCharCode(65 + i)}. ${choice}
+                    </button>
+                `;
+            });
+
+            // ปรับปุ่ม นำทาง/ส่ง
+            const isLast = currentIdx === quizData.length - 1;
+            document.getElementById('next-btn').classList.toggle('hidden', isLast);
+            document.getElementById('submit-btn').classList.toggle('hidden', !isLast);
+        }
+
+        function selectChoice(qId, choiceIdx) {
+            answers[qId] = choiceIdx;
+            renderQuestion();
+        }
+
+        function changeQuestion(step) {
+            currentIdx += step;
+            renderQuestion();
+        }
+
+        async function submitQuiz() {
+            const name = document.getElementById('studentName').value || "นักเรียน";
+            const res = await fetch('/api/submit', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ student_name: name, answers: answers })
+            });
+            const result = await res.json();
+            
+            document.getElementById('quiz-view').classList.add('hidden');
+            document.getElementById('result-view').classList.remove('hidden');
+            document.getElementById('score-display').innerText = `${result.score} / ${result.total}`;
+        }
+
+        connect(); // เริ่มเชื่อมต่อเมื่อเปิดหน้าเว็บ
+    </script>
+</body>
+</html>
